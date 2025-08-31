@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- ✅ 개발/테스트 서버용 cleartext 허용 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- ngrok 도메인: 와일드카드로 넉넉히 -->
+        <domain includeSubdomains="true">ngrok-free.app</domain>
+        <domain includeSubdomains="true">ngrok.io</domain>
+        <!-- 고정 아이피도 명시 -->
+        <domain includeSubdomains="true">13.124.208.108</domain>
+    </domain-config>
+</network-security-config>
