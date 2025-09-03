@@ -7,11 +7,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 음성 인식(STT) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
 
     <!-- Android 13+ 알림 권한(런타임 요청 필요) -->
     <uses-permission
         android:name="android.permission.POST_NOTIFICATIONS"
         tools:targetApi="33" />
+
 
     <application
         android:allowBackup="true"
@@ -30,7 +33,9 @@
         <receiver
             android:name=".AlarmReceiver"
             android:exported="false" />
-
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${ADMOB_APP_ID}" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

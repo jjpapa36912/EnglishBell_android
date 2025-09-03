@@ -17,31 +17,48 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import androidx.annotation.RawRes
 import androidx.annotation.RequiresPermission
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Autorenew
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material3.AlertDialog
@@ -58,42 +75,54 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.MobileAds
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -106,17 +135,23 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
-import android.speech.tts.Voice
-import androidx.compose.foundation.layout.fillMaxHeight
 
 // ✅ 모든 고정 레이아웃에서 공유할 폭
-private object UiDims {
-    val PANE_WIDTH = 340.dp
+private object UiDims { val PANE_WIDTH = 340.dp }
+
+@Composable
+fun BannerAdView(modifier: Modifier = Modifier) {
+    androidx.compose.ui.viewinterop.AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            AdView(context).apply {
+                adUnitId = "ca-app-pub-2190585582842197/4425344362"
+                setAdSize(AdSize.BANNER)
+                loadAd(AdRequest.Builder().build())
+            }
+        },
+        onRelease = { it.destroy() }
+    )
 }
 
 // ------------------------------------------------------------
@@ -125,11 +160,11 @@ private object UiDims {
 class EnglishBellApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        MobileAds.initialize(this) {}
         createChannels()
     }
 
     private fun createChannels() {
-        // 채널 기본 사운드(eng_prompt_01) 지정 (O+에서 유효)
         val defaultUri = Uri.parse("android.resource://$packageName/${R.raw.eng_prompt_01}")
         val attrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_NOTIFICATION)
@@ -145,169 +180,7 @@ class EnglishBellApp : Application() {
         NotificationManagerCompat.from(this).createNotificationChannel(ch)
     }
 
-    companion object {
-        const val CH_ID = "english_bell_channel"
-    }
-}
-
-// ------------------------------------------------------------
-// Cupertino 스타일 TimePicker (BottomSheet)
-// ------------------------------------------------------------
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CupertinoTimePickerSheet(
-    initialMillis: Long,
-    use24h: Boolean = true,
-    onDismiss: () -> Unit,
-    onConfirm: (hour: Int, minute: Int) -> Unit
-) {
-    val cal = remember(initialMillis) {
-        Calendar.getInstance().apply { timeInMillis = initialMillis }
-    }
-
-    var hour24 by remember { mutableIntStateOf(cal.get(Calendar.HOUR_OF_DAY)) }
-    var minute by remember { mutableIntStateOf(cal.get(Calendar.MINUTE)) }
-    var am by remember { mutableStateOf(hour24 < 12) }
-
-    fun commit() {
-        val h = if (use24h) hour24 else {
-            val base = (hour24 % 12).let { if (it == 0) 12 else it }
-            var h24 = base % 12
-            if (!am) h24 += 12
-            h24
-        }
-        onConfirm(h, minute)
-    }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            if (use24h) {
-                WheelNumberPicker(
-                    selected = hour24,
-                    range = 0..23,
-                    formatter = { "%02d".format(it) },
-                    onChange = { hour24 = it },
-                    widthDp = 90
-                )
-            } else {
-                val hour12 = (hour24 % 12).let { if (it == 0) 12 else it }
-                WheelNumberPicker(
-                    selected = hour12,
-                    range = 1..12,
-                    formatter = { "%02d".format(it) },
-                    onChange = {
-                        val currentIsNoon = hour24 >= 12
-                        hour24 = (it % 12) + if (currentIsNoon) 12 else 0
-                    },
-                    widthDp = 90
-                )
-            }
-
-            Spacer(Modifier.width(8.dp))
-
-            WheelNumberPicker(
-                selected = minute,
-                range = 0..59,
-                formatter = { "%02d".format(it) },
-                onChange = { minute = it },
-                widthDp = 90
-            )
-
-            if (!use24h) {
-                Spacer(Modifier.width(8.dp))
-                WheelTextPicker(
-                    items = listOf("AM", "PM"),
-                    selected = if (am) 0 else 1,
-                    onChange = { am = (it == 0) },
-                    widthDp = 90
-                )
-            }
-        }
-
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.End
-        ) {
-            TextButton(onClick = onDismiss) { Text("취소") }
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = {
-                commit()
-                onDismiss()
-            }) { Text("확인") }
-        }
-        Spacer(Modifier.height(8.dp))
-    }
-}
-
-@Composable
-private fun WheelNumberPicker(
-    selected: Int,
-    range: IntRange,
-    formatter: (Int) -> String,
-    onChange: (Int) -> Unit,
-    widthDp: Int
-) {
-    AndroidView(
-        modifier = Modifier
-            .width(widthDp.dp)
-            .height(160.dp),
-        factory = { ctx ->
-            android.widget.NumberPicker(ctx).apply {
-                minValue = range.first
-                maxValue = range.last
-                wrapSelectorWheel = true
-                descendantFocusability = android.widget.NumberPicker.FOCUS_BLOCK_DESCENDANTS
-                setFormatter { v -> formatter(v) }
-                value = selected
-                setOnValueChangedListener { _, _, newVal -> onChange(newVal) }
-            }
-        },
-        update = { picker ->
-            picker.minValue = range.first
-            picker.maxValue = range.last
-            picker.value = selected.coerceIn(range)
-        }
-    )
-}
-
-@Composable
-private fun WheelTextPicker(
-    items: List<String>,
-    selected: Int,
-    onChange: (Int) -> Unit,
-    widthDp: Int
-) {
-    AndroidView(
-        modifier = Modifier
-            .width(widthDp.dp)
-            .height(160.dp),
-        factory = { ctx ->
-            android.widget.NumberPicker(ctx).apply {
-                minValue = 0
-                maxValue = items.lastIndex
-                displayedValues = items.toTypedArray()
-                wrapSelectorWheel = true
-                descendantFocusability = android.widget.NumberPicker.FOCUS_BLOCK_DESCENDANTS
-                value = selected
-                setOnValueChangedListener { _, _, newVal -> onChange(newVal) }
-            }
-        },
-        update = { picker ->
-            picker.displayedValues = null
-            picker.minValue = 0
-            picker.maxValue = items.lastIndex
-            picker.displayedValues = items.toTypedArray()
-            picker.value = selected.coerceIn(0, items.lastIndex)
-        }
-    )
+    companion object { const val CH_ID = "english_bell_channel" }
 }
 
 // ------------------------------------------------------------
@@ -315,7 +188,7 @@ private fun WheelTextPicker(
 // ------------------------------------------------------------
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
-    val role: String, // "user" | "assistant" | "system"
+    val role: String,
     val text: String
 )
 
@@ -536,20 +409,18 @@ class AlarmReceiver : BroadcastReceiver() {
         )
 
         val builder = NotificationCompat.Builder(context, EnglishBellApp.CH_ID)
-            .setSmallIcon(R.drawable.ic_stat_name) // 앱에 리소스 있어야 함
+            .setSmallIcon(R.drawable.ic_stat_name)
             .setContentTitle("영어 대화 알람")
             .setContentText("영어 대화할 시간입니다!")
             .setContentIntent(pi)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
 
-        // O 미만에서만 per-notification sound 지정
         val uri = UriUtils.rawUri(context, sound)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             @Suppress("DEPRECATION")
             builder.setSound(uri, AudioManager.STREAM_NOTIFICATION)
         }
-        // O+는 채널 사운드 사용
 
         NotificationManagerCompat.from(context)
             .notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), builder.build())
@@ -667,17 +538,59 @@ class SpeechController(
 ) {
     private var recognizer: SpeechRecognizer? = null
     private var isListening = false
+
     private var lastPartial: String = ""
-    private val silenceTimeoutMs = 2500L
+    private val silenceTimeoutMs = 4000L
+
+    private val main = Handler(Looper.getMainLooper())
     private var silenceHandler: Handler? = null
+
+    private var keepAlive = false
+    private var paused = false
+
     private val silenceRunnable = Runnable {
-        if (lastPartial.isNotEmpty()) onText(lastPartial)
-        stop()
+        if (!paused && lastPartial.isNotEmpty()) onText(lastPartial)
+        internalStop(restartable = true)
     }
 
-    fun start() {
+    fun isRecognizing(): Boolean = isListening
+
+    fun start(keepAlive: Boolean = false) {
+        main.post {
+            this.keepAlive = keepAlive
+            paused = false
+            beginListening()
+        }
+    }
+
+    fun pause() {
+        main.post {
+            paused = true
+            keepAlive = false
+            internalStop(restartable = false)
+        }
+    }
+
+    fun stop() {
+        main.post {
+            paused = false
+            keepAlive = false
+            internalStop(restartable = false)
+        }
+    }
+
+    fun resume(delayMs: Long = 0L) {
+        main.postDelayed({
+            paused = false
+            keepAlive = true
+            beginListening()
+        }, delayMs)
+    }
+
+    private fun beginListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(ctx)) return
-        stop()
+        internalStop(restartable = false)
+
         recognizer = SpeechRecognizer.createSpeechRecognizer(ctx).apply {
             setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) { resetSilence() }
@@ -685,47 +598,51 @@ class SpeechController(
                 override fun onRmsChanged(rmsdB: Float) {}
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {}
-                override fun onError(error: Int) { stop() }
+                override fun onError(error: Int) { internalStop(restartable = true) }
                 override fun onResults(results: Bundle?) {
                     val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: arrayListOf()
                     val text = list.firstOrNull().orEmpty()
-                    if (text.isNotEmpty()) onText(text)
-                    stop()
+                    if (!paused && text.isNotEmpty()) onText(text)
+                    internalStop(restartable = true)
                 }
                 override fun onPartialResults(partialResults: Bundle?) {
                     val list = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: arrayListOf()
                     lastPartial = list.firstOrNull().orEmpty()
-                    onPartial(lastPartial)
-                    resetSilence()
+                    if (!paused) onPartial(lastPartial); resetSilence()
                 }
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
         }
+
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-US")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }
+
         recognizer?.startListening(intent)
         isListening = true
         resetSilence()
     }
 
-    fun stop() {
+    private fun internalStop(restartable: Boolean) {
         isListening = false
         recognizer?.cancel()
         recognizer?.destroy()
         recognizer = null
+
         silenceHandler?.removeCallbacksAndMessages(null)
         silenceHandler = null
         lastPartial = ""
+
+        if (restartable && keepAlive && !paused) {
+            main.postDelayed({ beginListening() }, 150L)
+        }
     }
 
-    fun isRecognizing(): Boolean = isListening
-
     private fun resetSilence() {
-        if (silenceHandler == null) silenceHandler = Handler(Looper.getMainLooper())
+        if (silenceHandler == null) silenceHandler = main
         silenceHandler?.removeCallbacksAndMessages(null)
         silenceHandler?.postDelayed(silenceRunnable, silenceTimeoutMs)
     }
@@ -736,28 +653,25 @@ class TTSController(ctx: Context, private val onSpeakingChanged: (Boolean) -> Un
     private var tts: TextToSpeech? = null
     private var ready = false
 
-    init {
-        tts = TextToSpeech(ctx, this)
-    }
+    init { tts = TextToSpeech(ctx, this) }
 
     override fun onInit(status: Int) {
         ready = status == TextToSpeech.SUCCESS
         if (ready) {
             tts?.voice = tts?.voices?.firstOrNull {
-                it.locale.language == "en" && it.locale.country == "US" &&
-                        it.quality >= Voice.QUALITY_HIGH
+                it.locale.language == "en" && it.locale.country == "US" && it.quality >= Voice.QUALITY_HIGH
             } ?: tts?.defaultVoice
         }
     }
 
-    fun speak(text: String) {
+    fun speak(text: String, onDone: (() -> Unit)? = null) {
         stop()
         if (!ready) return
         onSpeakingChanged(true)
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) { onSpeakingChanged(true) }
-            override fun onDone(utteranceId: String?) { onSpeakingChanged(false) }
-            override fun onError(utteranceId: String?) { onSpeakingChanged(false) }
+            override fun onDone(utteranceId: String?) { onSpeakingChanged(false); onDone?.invoke() }
+            override fun onError(utteranceId: String?) { onSpeakingChanged(false); onDone?.invoke() }
         })
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), UUID.randomUUID().toString())
     }
@@ -771,10 +685,7 @@ class TTSController(ctx: Context, private val onSpeakingChanged: (Boolean) -> Un
 // ------------------------------------------------------------
 class ChatVM(private val ctx: Context) {
     private val isDebug = (ctx.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-    private val serverURL = if (isDebug)
-        "https://fe18a029cc8f.ngrok-free.app"
-    else
-        "http://13.124.208.108:2479"
+    private val serverURL = if (isDebug) "https://fe18a029cc8f.ngrok-free.app" else "http://13.124.208.108:2479"
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
@@ -794,6 +705,9 @@ class ChatVM(private val ctx: Context) {
     private var currentSession: ChatSession? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    private var speechRef: SpeechController? = null
+    fun attachSpeech(speech: SpeechController) { speechRef = speech }
+
     fun isActive() = _chatActive.value
 
     fun startChat(tts: TTSController) {
@@ -803,9 +717,7 @@ class ChatVM(private val ctx: Context) {
             _loading.emit(true); _error.emit(null)
             try {
                 val url = URL("$serverURL/chat/start")
-                val body = JSONObject()
-                    .put("prompt", "Hello! Would you like to practice some interesting expressions with me?")
-                    .toString()
+                val body = JSONObject().put("prompt", "Hello! Would you like to practice some interesting expressions with me?").toString()
                 val resp = httpPostJson(url, body)
                 val sr = JSONObject(resp)
                 val assistant = ChatMessage(role = "assistant", text = sr.getString("assistant_text"))
@@ -813,21 +725,25 @@ class ChatVM(private val ctx: Context) {
                 _messages.emit(newList)
                 currentSession?.messages?.add(assistant)
                 _loading.emit(false)
-                withContextMain { tts.speak(assistant.text) }
+
+                withContextMain {
+                    speechRef?.pause()
+                    tts.speak(assistant.text) { if (_chatActive.value) speechRef?.resume(350L) }
+                }
             } catch (e: Exception) {
                 _loading.emit(false)
                 _error.emit("Failed to start chat: ${e.message}")
+                withContextMain { if (_chatActive.value) speechRef?.resume(350L) }
             }
         }
     }
 
-    fun onPartialText(text: String) {
-        scope.launch { _recognizedPartial.emit(text) }
-    }
+    fun onPartialText(text: String) { scope.launch { _recognizedPartial.emit(text) } }
 
     fun sendRecognized(text: String, tts: TTSController) {
         if (text.isBlank() || _loading.value || !_chatActive.value) return
         scope.launch {
+            withContextMain { speechRef?.pause() }
             val user = ChatMessage(role = "user", text = text)
             val appended = _messages.value.toMutableList().apply { add(user) }
             _messages.emit(appended)
@@ -852,25 +768,24 @@ class ChatVM(private val ctx: Context) {
                 _messages.emit(newList)
                 currentSession?.messages?.add(assistant)
                 _loading.emit(false)
-                withContextMain { tts.speak(assistant.text) }
+
+                withContextMain { tts.speak(assistant.text) { if (_chatActive.value) speechRef?.resume(350L) } }
             } catch (e: Exception) {
                 _loading.emit(false)
                 _error.emit("Failed to get AI response: ${e.message}")
+                withContextMain { if (_chatActive.value) speechRef?.resume(350L) }
             }
         }
     }
 
     fun endChat() {
         _chatActive.value = false
-        scope.launch {
-            val sys = ChatMessage(role = "system", text = "대화가 종료되었습니다.")
-            _messages.emit(_messages.value + sys)
-        }
+        scope.launch { _messages.emit(_messages.value + ChatMessage(role = "system", text = "대화가 종료되었습니다.")) }
     }
 
-    fun resumeChat(speech: SpeechController) {
+    fun resumeChat() {
         _chatActive.value = true
-        speech.start()
+        speechRef?.resume(0L)
     }
 
     fun setElapsedAndPersist(elapsedSec: Int) {
@@ -880,16 +795,18 @@ class ChatVM(private val ctx: Context) {
         }
     }
 
-    fun setPartialTextUi(text: String) {
-        scope.launch { _recognizedPartial.emit(text) }
-    }
+    fun setPartialTextUi(text: String) { scope.launch { _recognizedPartial.emit(text) } }
 
     fun pushAssistantTTS(text: String, tts: TTSController) {
-        tts.speak(text)
+        scope.launch {
+            withContext(Dispatchers.Main) {
+                speechRef?.pause()
+                tts.speak(text) { if (_chatActive.value) speechRef?.resume(350L) }
+            }
+        }
     }
 
     private fun httpPostJson(url: URL, jsonBody: String): String {
-        try {
         val con = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Content-Type", "application/json")
@@ -898,43 +815,22 @@ class ChatVM(private val ctx: Context) {
             readTimeout = 15000
         }
         con.outputStream.use { it.write(jsonBody.toByteArray(Charsets.UTF_8)) }
-
         val code = con.responseCode
         val stream = if (code in 200..299) con.inputStream else con.errorStream
-
-        if (stream == null) {
-            throw RuntimeException("HTTP $code (no response body)")
-        }
-
         val sb = StringBuilder()
-        BufferedReader(InputStreamReader(stream)).use { br ->
-            var line: String?
-            while (true) {
-                line = br.readLine() ?: break
-                sb.append(line)
-            }
+        BufferedReader(InputStreamReader(stream ?: return "")).use { br ->
+            var line: String?; while (true) { line = br.readLine() ?: break; sb.append(line) }
         }
-
         if (code !in 200..299) throw RuntimeException("HTTP $code $sb")
         return sb.toString()
-    } catch (e: Exception) {
-        android.util.Log.e("ChatVM", "HTTP fail: ${url} -> ${e.message}", e)
-        throw e
     }
-
-
-
-
-
-    }
-
 }
 
 private suspend fun withContextMain(block: suspend () -> Unit) =
     withContext(Dispatchers.Main) { block() }
 
 // ------------------------------------------------------------
-// 6) UI (Compose)
+// 6) UI (Compose) — 타임피커를 Compose Wheel로 교체
 // ------------------------------------------------------------
 @OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
@@ -944,8 +840,21 @@ class MainActivity : ComponentActivity() {
         ensurePermissions()
 
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme()) {
+            val DarkColors = darkColorScheme(
+                primary = Color(0xFF7C4DFF),
+                background = Color(0xFF0B0B0F),
+                surface = Color(0xFF15151C),
+                onPrimary = Color.White,
+                onBackground = Color(0xFFEDEDF7),
+                onSurface = Color(0xFFE0DFF4)
+            )
+            val LightColors = lightColorScheme(
+                primary = Color(0xFF3F51B5)
+            )
+
+            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors) {
                 val ctx = LocalContext.current
+
                 var page by remember { mutableStateOf<Page>(Page.Main) }
                 var currentDateForList by remember { mutableStateOf<Long?>(null) }
                 var openChat by remember { mutableStateOf(false) }
@@ -955,6 +864,7 @@ class MainActivity : ComponentActivity() {
                 var isSpeaking by remember { mutableStateOf(false) }
 
                 val tts = remember { TTSController(ctx) { isSpeaking = it } }
+
                 val speech = remember {
                     SpeechController(
                         ctx,
@@ -966,7 +876,8 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                // Timer tick
+                LaunchedEffect(speech) { chatVM.attachSpeech(speech) }
+
                 val activeState by chatVM.chatActive.collectAsState()
                 LaunchedEffect(activeState, openChat) {
                     while (true) {
@@ -975,12 +886,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Navigation
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(brushBg())
-                ) {
+                Box(Modifier.fillMaxSize().background(brushBg())) {
                     when (val p = page) {
                         Page.Main -> MainView(
                             openChat = {
@@ -988,11 +894,11 @@ class MainActivity : ComponentActivity() {
                                 elapsed = 0
                                 page = Page.Chat
                                 chatVM.startChat(tts)
-                                speech.start()
                             },
                             openDates = { page = Page.Dates },
                             alarmsViewModel = remember { AlarmsVM(ctx) }
                         )
+
                         Page.Chat -> ChatView(
                             vm = chatVM,
                             isSpeaking = isSpeaking,
@@ -1000,27 +906,26 @@ class MainActivity : ComponentActivity() {
                             onBack = {
                                 openChat = false
                                 chatVM.setElapsedAndPersist(elapsed)
-                                tts.stop()
-                                speech.stop()
+                                tts.stop(); speech.stop()
                                 page = Page.Main
                                 chatVM.endChat()
                             },
                             onSpeakAgain = { msg -> chatVM.pushAssistantTTS(msg.text, tts) },
                             onEnd = { chatVM.endChat() },
-                            onResume = { chatVM.resumeChat(speech) }
+                            onResume = { chatVM.resumeChat() }
                         )
+
                         Page.Dates -> DatesListView(
                             onBack = { page = Page.Main },
-                            onPickDay = { day ->
-                                currentDateForList = day
-                                page = Page.SessionsByDate
-                            }
+                            onPickDay = { day -> currentDateForList = day; page = Page.SessionsByDate }
                         )
+
                         Page.SessionsByDate -> SessionsByDateView(
                             dayMillis = currentDateForList!!,
                             onBack = { page = Page.Dates },
                             onOpenSession = { session -> page = Page.Detailed(session) }
                         )
+
                         is Page.Detailed -> DetailedChatView(
                             session = p.session,
                             onBack = { page = Page.SessionsByDate }
@@ -1041,9 +946,7 @@ class MainActivity : ComponentActivity() {
                 != PackageManager.PERMISSION_GRANTED
             ) needs += Manifest.permission.POST_NOTIFICATIONS
         }
-        if (needs.isNotEmpty()) {
-            requestPermissions(needs.toTypedArray(), 1001)
-        }
+        if (needs.isNotEmpty()) requestPermissions(needs.toTypedArray(), 1001)
     }
 }
 
@@ -1055,9 +958,15 @@ sealed class Page {
     data class Detailed(val session: ChatSession) : Page()
 }
 
+// ★ 검은 바탕 + 보라 그라데이션
 @Composable
 private fun brushBg() = Brush.linearGradient(
-    listOf(Color(0x40218CFF), Color(0x403F51B5))
+    listOf(
+        Color(0xFF0B0B0F),
+        Color(0xFF1B1033),
+        Color(0xFF3F2B96),
+        Color(0xFF7C4DFF)
+    )
 )
 
 @Composable
@@ -1065,11 +974,12 @@ fun SectionCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val surfaceAlpha = if (isSystemInDarkTheme()) 0.6f else 0.7f
     Column(
         modifier = modifier
             .padding(horizontal = 16.dp)
             .clip(RoundedCornerShape(18.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = surfaceAlpha))
             .then(Modifier.padding(16.dp))
     ) { content() }
 }
@@ -1085,11 +995,10 @@ fun GradientProgressBar(progress: Float, modifier: Modifier = Modifier) {
     ) {
         Box(
             modifier = Modifier
-                .fillMaxHeight()
                 .fillMaxWidth(progress.coerceIn(0f, 1f))
-                .background(
-                    Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF3F51B5)))
-                )
+                .height(16.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF3F51B5))))
         )
     }
 }
@@ -1117,19 +1026,31 @@ fun MainView(
     var showLimit by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            BannerAdView(modifier = Modifier.padding(horizontal = 12.dp))
+        }
         Spacer(Modifier.height(6.dp))
         Row(
             Modifier.padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("English Bell", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+            Text(
+                "English Bell",
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
             Spacer(Modifier.weight(1f))
             IconButton(onClick = openDates) {
-                Icon(painterResource(id = android.R.drawable.ic_menu_recent_history), contentDescription = "날짜별")
+                Icon(
+                    painterResource(id = android.R.drawable.ic_menu_recent_history),
+                    contentDescription = "날짜별",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
             }
         }
 
-        // ✅ 대화하기 버튼 (같은 고정 폭, 중앙 정렬)
+        // ✅ 대화하기 버튼
         SectionCard(
             modifier = Modifier
                 .width(UiDims.PANE_WIDTH)
@@ -1138,27 +1059,20 @@ fun MainView(
         ) {
             Button(
                 onClick = openChat,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3F51B5))
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
-                Icon(Icons.Default.Speaker, contentDescription = null)
+                Icon(Icons.Default.Speaker, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
                 Spacer(Modifier.width(8.dp))
-                Text("대화하기", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("대화하기", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
             }
         }
 
-        // ① 탭 + 저장 (고정 폭)
+        // ① 탭 + 저장
         SectionCard(
-            modifier = Modifier
-                .width(UiDims.PANE_WIDTH)
-                .align(Alignment.CenterHorizontally)
+            modifier = Modifier.width(UiDims.PANE_WIDTH).align(Alignment.CenterHorizontally)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Segmented(
                     options = listOf(AlarmType.DAILY, AlarmType.WEEKLY, AlarmType.INTERVAL),
                     selected = tab,
@@ -1185,48 +1099,54 @@ fun MainView(
             }
         }
 
-        // ② 시간 선택 (고정 폭)
+        // ② 시간 선택
         SectionCard(
-            modifier = Modifier
-                .width(UiDims.PANE_WIDTH)
-                .align(Alignment.CenterHorizontally)
+            modifier = Modifier.width(UiDims.PANE_WIDTH).align(Alignment.CenterHorizontally)
         ) {
             if (tab == AlarmType.DAILY || tab == AlarmType.WEEKLY) {
-                Text("시간 선택", fontWeight = FontWeight.SemiBold)
+                Text("시간 선택", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 OutlinedButton(
                     onClick = { showTimePicker = true },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
                 ) {
                     Text(
                         SimpleDateFormat(if (use24h) "HH:mm" else "hh:mm a", Locale.getDefault())
-                            .format(Date(selectedTime))
+                            .format(Date(selectedTime)),
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
 
             if (tab == AlarmType.WEEKLY) {
                 Spacer(Modifier.height(8.dp))
-                Text("요일 선택", fontWeight = FontWeight.SemiBold)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                ) {
-                    val weekdays = listOf("일","월","화","수","목","금","토")
+                Text("요일 선택", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+
+                // ★ 한 줄 균등폭 (일~토)
+                val weekdays = listOf("일","월","화","수","목","금","토")
+                Row(modifier = Modifier.fillMaxWidth()) {
                     (1..7).forEach { w ->
                         val on = selectedWeekdays.contains(w)
-                        Text(
-                            weekdays[w - 1],
+                        Box(
+                            contentAlignment = Alignment.Center,
                             modifier = Modifier
-                                .padding(4.dp)
+                                .weight(1f)
+                                .padding(2.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (on) Color(0xFF7C4DFF) else Color.White.copy(0.6f))
+                                .background(
+                                    if (on) Color(0xFF7C4DFF)
+                                    else MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                )
                                 .clickable {
                                     if (on) selectedWeekdays.remove(w) else selectedWeekdays.add(w)
                                 }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            color = if (on) Color.White else Color.Unspecified
-                        )
+                                .padding(vertical = 8.dp)
+                        ) {
+                            Text(
+                                weekdays[w - 1],
+                                color = if (on) Color.White else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 }
             }
@@ -1234,7 +1154,7 @@ fun MainView(
             if (tab == AlarmType.INTERVAL) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Text("알람 주기", fontWeight = FontWeight.SemiBold)
+                    Text("알람 주기", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                     Spacer(Modifier.weight(1f))
                     Text("${selectedInterval.roundToInt()}분", color = Color.Gray)
                 }
@@ -1248,15 +1168,12 @@ fun MainView(
             }
         }
 
-        // ③ 오늘 대화 (고정 폭)
+        // ③ 오늘 대화
         SectionCard(
-            modifier = Modifier
-                .width(UiDims.PANE_WIDTH)
-                .align(Alignment.CenterHorizontally)
-                .padding(top = 12.dp)
+            modifier = Modifier.width(UiDims.PANE_WIDTH).align(Alignment.CenterHorizontally).padding(top = 12.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("오늘 대화", fontWeight = FontWeight.SemiBold)
+                Text("오늘 대화", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                 Spacer(Modifier.weight(1f))
                 Text("${mmss(todaySec)} / 60:00", color = Color.Gray)
             }
@@ -1264,28 +1181,19 @@ fun MainView(
             GradientProgressBar(progress = progress)
         }
 
-        // ④ 알람 목록 (고정 폭)
+        // ④ 알람 목록
         SectionCard(
-            modifier = Modifier
-                .width(UiDims.PANE_WIDTH)
-                .align(Alignment.CenterHorizontally)
-                .padding(top = 12.dp)
+            modifier = Modifier.width(UiDims.PANE_WIDTH).align(Alignment.CenterHorizontally).padding(top = 12.dp)
         ) {
-            Text("내 알람 목록 (최대 5개)", fontWeight = FontWeight.SemiBold)
+            Text("내 알람 목록 (최대 5개)", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
             val alarms by alarmsViewModel.alarms.collectAsState()
             if (alarms.isEmpty()) {
                 Text("등록된 알람이 없습니다.", color = Color.Gray)
             } else {
                 alarms.forEach { a ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(vertical = 6.dp)
-                    ) {
-                        Text(a.description(), modifier = Modifier.weight(1f))
-                        Switch(
-                            checked = a.isActive,
-                            onCheckedChange = { alarmsViewModel.toggle(a.id) }
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
+                        Text(a.description(), modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
+                        Switch(checked = a.isActive, onCheckedChange = { alarmsViewModel.toggle(a.id) })
                         IconButton(onClick = { alarmsViewModel.delete(a.id) }) {
                             Icon(Icons.Default.Delete, contentDescription = "삭제", tint = Color.Red)
                         }
@@ -1293,17 +1201,6 @@ fun MainView(
                     androidx.compose.material3.Divider(color = Color.Black.copy(alpha = 0.1f))
                 }
             }
-        }
-
-        if (showLimit) {
-            AlertDialog(
-                onDismissRequest = { showLimit = false },
-                confirmButton = {
-                    TextButton(onClick = { showLimit = false }) { Text("확인") }
-                },
-                title = { Text("저장할 수 없어요😂") },
-                text = { Text("알람은 최대 5개까지 저장할 수 있어요.") }
-            )
         }
     }
 
@@ -1325,13 +1222,14 @@ fun MainView(
     }
 }
 
-
 @Composable
 fun Segmented(options: List<AlarmType>, selected: AlarmType, onSelect: (AlarmType) -> Unit) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(Color.White.copy(0.7f))
+            .background(
+                if (isSystemInDarkTheme()) Color.White.copy(0.12f) else Color.White.copy(0.7f)
+            )
             .padding(2.dp)
     ) {
         options.forEach { opt ->
@@ -1343,7 +1241,7 @@ fun Segmented(options: List<AlarmType>, selected: AlarmType, onSelect: (AlarmTyp
                     .background(if (on) Color(0xFF7C4DFF) else Color.Transparent)
                     .clickable { onSelect(opt) }
                     .padding(horizontal = 10.dp, vertical = 6.dp),
-                color = if (on) Color.White else Color.Unspecified
+                color = if (on) Color.White else MaterialTheme.colorScheme.onSurface
             )
         }
     }
@@ -1373,12 +1271,11 @@ fun TimeWheel(timeMillis: Long, onChange: (Long) -> Unit) {
     )
 }
 
-private fun timeToday(h: Int, m: Int): Long {
-    return Calendar.getInstance().apply {
+private fun timeToday(h: Int, m: Int): Long =
+    Calendar.getInstance().apply {
         set(Calendar.HOUR_OF_DAY, h); set(Calendar.MINUTE, m)
         set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
     }.timeInMillis
-}
 
 private fun mmss(sec: Int): String {
     val m = sec / 60; val s = sec % 60
@@ -1410,24 +1307,21 @@ fun ChatView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
             Spacer(Modifier.weight(1f))
-            Text("English Tutor", style = MaterialTheme.typography.titleMedium)
+            Text("English Tutor", style = MaterialTheme.typography.titleMedium, color = Color.White)
             Spacer(Modifier.weight(1f))
-            Text(
-                mmss(elapsedSec),
-                style = MaterialTheme.typography.labelLarge,
-                color = Color.Gray
-            )
+            Text(mmss(elapsedSec), style = MaterialTheme.typography.labelLarge, color = Color(0xFFB9B7D3))
             Spacer(Modifier.width(8.dp))
         }
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            BannerAdView(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+        }
+        Spacer(Modifier.height(8.dp))
 
         LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp)
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)
         ) {
             items(messages.size) { idx ->
                 val m = messages[idx]
@@ -1442,9 +1336,7 @@ fun ChatView(
         error?.let { Text(it, color = Color.Red, modifier = Modifier.padding(12.dp)) }
         if (loading) {
             LinearProgressIndicator(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)
             )
         }
 
@@ -1468,19 +1360,22 @@ fun MessageBubble(message: ChatMessage, onSpeaker: () -> Unit) {
     ) {
         if (!isUser) {
             IconButton(onClick = onSpeaker) {
-                Icon(Icons.Default.Speaker, contentDescription = "speak", tint = Color(0xFF3F51B5))
+                Icon(Icons.Default.Speaker, contentDescription = "speak", tint = Color(0xFF7C4DFF))
             }
         }
         Box(
             modifier = Modifier
                 .widthIn(max = 300.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(if (isUser) Color(0xFF3F51B5) else Color(0xFFEEEEEE))
+                .background(
+                    if (isUser) Color(0xFF3F51B5)
+                    else if (isSystemInDarkTheme()) Color(0xFF2A2A35) else Color(0xFFEEEEEE)
+                )
                 .padding(10.dp)
         ) {
             Text(
                 message.text,
-                color = if (isUser) Color.White else Color.Black
+                color = if (isUser) Color.White else if (isSystemInDarkTheme()) Color(0xFFEDEDF7) else Color.Black
             )
         }
     }
@@ -1497,8 +1392,12 @@ fun AudioControlBar(
     Row(
         Modifier
             .fillMaxWidth()
-            .background(Color.White.copy(0.8f))
-            .padding(12.dp),
+            .padding(WindowInsets.navigationBars.asPaddingValues())
+            .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 32.dp)
+            .background(
+                if (isSystemInDarkTheme()) MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
+                else Color.White.copy(0.8f)
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (active) {
@@ -1509,14 +1408,13 @@ fun AudioControlBar(
                     recognizedText.isNotEmpty() -> recognizedText
                     else -> "말씀해주세요..."
                 },
-                maxLines = 1, overflow = TextOverflow.Ellipsis
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (isSystemInDarkTheme()) Color(0xFFEDEDF7) else Color.Unspecified
             )
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onEnd) {
-                Icon(
-                    painterResource(id = android.R.drawable.presence_busy),
-                    contentDescription = "end", tint = Color.Red
-                )
+                Icon(Icons.Default.Close, contentDescription = "end", tint = Color.Red)
             }
         } else {
             Spacer(Modifier.weight(1f))
@@ -1535,6 +1433,9 @@ fun DatesListView(onBack: () -> Unit, onPickDay: (Long) -> Unit) {
     val items = remember { Store.dailyTotals(ctx) }
     Column(Modifier.fillMaxSize()) {
         TopBar(title = "날짜별 기록", onBack = onBack)
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            BannerAdView(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+        }
         if (items.isEmpty()) {
             EmptyState("표시할 날짜가 없어요", "대화를 시작해 기록을 쌓아보세요!")
         } else {
@@ -1551,7 +1452,7 @@ fun DatesListView(onBack: () -> Unit, onPickDay: (Long) -> Unit) {
                             .padding(16.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(fmtDay(day), fontWeight = FontWeight.SemiBold)
+                            Text(fmtDay(day), fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                             Spacer(Modifier.weight(1f))
                             Text("${mmss(sec)} / 60:00", color = Color.Gray)
                         }
@@ -1570,9 +1471,7 @@ private fun fmtDay(dayStartMillis: Long): String =
 @Composable
 fun TopBar(title: String, onBack: () -> Unit) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(onClick = onBack) {
@@ -1588,9 +1487,7 @@ fun TopBar(title: String, onBack: () -> Unit) {
 @Composable
 fun EmptyState(title: String, subtitle: String) {
     Column(
-        Modifier
-            .fillMaxSize()
-            .padding(top = 40.dp),
+        Modifier.fillMaxSize().padding(top = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(painterResource(id = android.R.drawable.ic_dialog_info), contentDescription = null, tint = Color.White)
@@ -1611,19 +1508,19 @@ fun SessionsByDateView(
     val sessions = remember { Store.sessionsOn(ctx, dayMillis) }
     Column(Modifier.fillMaxSize()) {
         TopBar(title = fmtDay(dayMillis), onBack = onBack)
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            BannerAdView(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+        }
         LazyColumn {
             items(sessions.size) { i ->
                 val s = sessions[i]
                 Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpenSession(s) }
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                    Modifier.fillMaxWidth().clickable { onOpenSession(s) }.padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
-                    Text(SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(s.startTime)))
-                    Text(mmss(s.totalSeconds ?: 0), color = Color.Gray)
+                    Text(SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(s.startTime)), color = Color.White)
+                    Text(mmss(s.totalSeconds ?: 0), color = Color(0xFFB9B7D3))
                 }
-                androidx.compose.material3.Divider()
+                androidx.compose.material3.Divider(color = Color.White.copy(alpha = 0.1f))
             }
         }
     }
@@ -1638,14 +1535,12 @@ fun DetailedChatView(session: ChatSession, onBack: () -> Unit) {
     DisposableEffect(Unit) { onDispose { tts.shutdown() } }
 
     Column(Modifier.fillMaxSize()) {
-        TopBar(title = "English Tutor", onBack = {
-            tts.stop()
-            onBack()
-        })
+        TopBar(title = "English Tutor", onBack = { tts.stop(); onBack() })
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            BannerAdView(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+        }
         LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp)
+            modifier = Modifier.weight(1f).padding(horizontal = 12.dp)
         ) {
             items(session.messages.size) { i ->
                 val m = session.messages[i]
@@ -1698,4 +1593,309 @@ class AlarmsVM(private val ctx: Context) {
         Store.saveAlarms(ctx, list)
         _alarms.value = list
     }
+}
+
+/* ────────────────────────────────────────────────────────────
+   ▼▼▼ Compose 기반 Cupertino 스타일 타임 피커 ▼▼▼
+   (완전 커스텀 휠: 색상/다크모드 일관, 클릭/드래그/탭 모두 명확)
+   기능: 시/분(+ AM/PM) 선택 → onConfirm(h, m) 콜백 동일
+   ──────────────────────────────────────────────────────────── */
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun CupertinoTimePickerSheet(
+    initialMillis: Long,
+    use24h: Boolean = true,
+    onDismiss: () -> Unit,
+    onConfirm: (hour: Int, minute: Int) -> Unit
+) {
+    val cal = remember(initialMillis) {
+        Calendar.getInstance().apply { timeInMillis = initialMillis }
+    }
+    var hour24 by remember { mutableIntStateOf(cal.get(Calendar.HOUR_OF_DAY)) }
+    var minute by remember { mutableIntStateOf(cal.get(Calendar.MINUTE)) }
+    var am by remember { mutableStateOf(hour24 < 12) }
+    val isDark = isSystemInDarkTheme()
+
+    fun commit() {
+        val h = if (use24h) hour24 else {
+            val base = (hour24 % 12).let { if (it == 0) 12 else it }
+            var h24 = base % 12
+            if (!am) h24 += 12
+            h24
+        }
+        onConfirm(h, minute)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+        scrimColor = Color.Black.copy(alpha = 0.5f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp, bottom = 8.dp)
+                .height(200.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            if (use24h) {
+                WheelColumn(
+                    range = 0..23,
+                    value = hour24,
+                    onValueChange = { hour24 = it },
+                    width = 90.dp,
+                    labelFormatter = { "%02d".format(it) }
+                )
+            } else {
+                val hour12 = (hour24 % 12).let { if (it == 0) 12 else it }
+                WheelColumn(
+                    range = 1..12,
+                    value = hour12,
+                    onValueChange = {
+                        val currentIsNoon = hour24 >= 12
+                        hour24 = (it % 12) + if (currentIsNoon) 12 else 0
+                    },
+                    width = 90.dp,
+                    labelFormatter = { "%02d".format(it) }
+                )
+            }
+
+            Spacer(Modifier.width(8.dp))
+
+            WheelColumn(
+                range = 0..59,
+                value = minute,
+                onValueChange = { minute = it },
+                width = 90.dp,
+                labelFormatter = { "%02d".format(it) }
+            )
+
+            if (!use24h) {
+                Spacer(Modifier.width(8.dp))
+                WheelColumnText(
+                    items = listOf("AM", "PM"),
+                    index = if (am) 0 else 1,
+                    onIndexChange = { am = it == 0 },
+                    width = 90.dp
+                )
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) { Text("취소") }
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = { commit(); onDismiss() }) { Text("확인") }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+/** 공통 스타일 값 */
+private val WheelItemHeight = 40.dp
+private const val WheelVisibleCount = 5  // 가운데 포함 5줄
+private val WheelMaskBrushLight = Brush.verticalGradient(
+    0f to Color.White.copy(0.95f),
+    0.15f to Color.White.copy(0.6f),
+    0.5f to Color.Transparent,
+    0.85f to Color.White.copy(0.6f),
+    1f to Color.White.copy(0.95f)
+)
+private val WheelMaskBrushDark = Brush.verticalGradient(
+    0f to Color(0xFF15151C).copy(0.98f),
+    0.15f to Color(0xFF15151C).copy(0.7f),
+    0.5f to Color.Transparent,
+    0.85f to Color(0xFF15151C).copy(0.7f),
+    1f to Color(0xFF15151C).copy(0.98f)
+)
+
+/** 숫자용 Wheel */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun WheelColumn(
+    range: IntRange,
+    value: Int,
+    onValueChange: (Int) -> Unit,
+    width: Dp,
+    labelFormatter: (Int) -> String
+) {
+    val items = remember(range) { range.toList() }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState(
+        // center current value
+        initialFirstVisibleItemIndex = (items.indexOf(value) - WheelVisibleCount / 2).coerceAtLeast(0)
+    )
+    val isDark = isSystemInDarkTheme()
+    val targetIndex by remember { derivedStateOf { centerIndexFrom(listState) } }
+
+    // 스크롤 멈출 때 중앙으로 스냅
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) {
+            val idx = targetIndex.coerceIn(0, items.lastIndex)
+            listState.animateScrollToItem((idx - WheelVisibleCount / 2).coerceIn(0, items.lastIndex))
+            onValueChange(items[idx])
+        }
+    }
+
+    // 외부에서 값이 바뀌면 스냅
+    LaunchedEffect(value) {
+        val idx = items.indexOf(value).coerceAtLeast(0)
+        listState.animateScrollToItem((idx - WheelVisibleCount / 2).coerceIn(0, items.lastIndex))
+    }
+
+    Box(
+        modifier = Modifier
+            .width(width)
+            .height(WheelItemHeight * WheelVisibleCount)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isDark) Color(0xFF1E1E27) else Color(0xFFF6F6FA))
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    // 탭 위치에 따라 한 칸 위/아래로 이동
+                    val boxHeight = WheelItemHeight * WheelVisibleCount
+                    val centerY = boxHeight.toPx() / 2f
+                    val delta = if (offset.y < centerY) -1 else 1
+                    val idx = (targetIndex + delta).coerceIn(0, items.lastIndex)
+                    scope.launch {
+                        listState.animateScrollToItem((idx - WheelVisibleCount / 2).coerceIn(0, items.lastIndex))
+                        onValueChange(items[idx])
+                    }
+                }
+            }
+    ) {
+        // 리스트
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            itemsIndexed(items) { idx, item ->
+                val selected = idx == targetIndex
+                val baseColor = if (isDark) Color(0xFFEDEDF7) else Color(0xFF121212)
+                val dim = if (isDark) Color(0xFF9EA0B3) else Color(0xFF7A7C8A)
+
+                Text(
+                    labelFormatter(item),
+                    modifier = Modifier
+                        .height(WheelItemHeight)
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
+                    color = if (selected) baseColor else dim,
+                    fontSize = if (selected) 22.sp else 18.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                )
+            }
+        }
+
+        // 중앙 가이드 라인
+        Canvas(
+            modifier = Modifier
+                .matchParentSize()
+                .zIndex(1f)
+        ) {
+            val yTop = size.height / 2f - WheelItemHeight.toPx() / 2f
+            val yBot = size.height / 2f + WheelItemHeight.toPx() / 2f
+            val line = if (isDark) Color(0x66FFFFFF) else Color(0x33000000)
+            drawLine(line, Offset(0f, yTop), Offset(size.width, yTop), strokeWidth = 1f)
+            drawLine(line, Offset(0f, yBot), Offset(size.width, yBot), strokeWidth = 1f)
+        }
+
+        // 상/하 마스크 (가독성)
+        Box(
+            Modifier.matchParentSize().background(if (isDark) WheelMaskBrushDark else WheelMaskBrushLight)
+        )
+    }
+}
+
+/** 텍스트(AM/PM)용 Wheel */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun WheelColumnText(
+    items: List<String>,
+    index: Int,
+    onIndexChange: (Int) -> Unit,
+    width: Dp
+) {
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = (index - WheelVisibleCount / 2).coerceAtLeast(0)
+    )
+    val isDark = isSystemInDarkTheme()
+    val targetIndex by remember { derivedStateOf { centerIndexFrom(listState) } }
+
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) {
+            val idx = targetIndex.coerceIn(0, items.lastIndex)
+            listState.animateScrollToItem((idx - WheelVisibleCount / 2).coerceIn(0, items.lastIndex))
+            onIndexChange(idx)
+        }
+    }
+    LaunchedEffect(index) {
+        val idx = index.coerceIn(0, items.lastIndex)
+        listState.animateScrollToItem((idx - WheelVisibleCount / 2).coerceIn(0, items.lastIndex))
+    }
+
+    Box(
+        modifier = Modifier
+            .width(width)
+            .height(WheelItemHeight * WheelVisibleCount)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isDark) Color(0xFF1E1E27) else Color(0xFFF6F6FA))
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    val boxHeight = WheelItemHeight * WheelVisibleCount
+                    val centerY = boxHeight.toPx() / 2f
+                    val delta = if (offset.y < centerY) -1 else 1
+                    val idx = (targetIndex + delta).coerceIn(0, items.lastIndex)
+                    scope.launch {
+                        listState.animateScrollToItem((idx - WheelVisibleCount / 2).coerceIn(0, items.lastIndex))
+                        onIndexChange(idx)
+                    }
+                }
+            }
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            itemsIndexed(items) { idx, label ->
+                val selected = idx == targetIndex
+                val baseColor = if (isDark) Color(0xFFEDEDF7) else Color(0xFF121212)
+                val dim = if (isDark) Color(0xFF9EA0B3) else Color(0xFF7A7C8A)
+
+                Text(
+                    label,
+                    modifier = Modifier
+                        .height(WheelItemHeight)
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
+                    color = if (selected) baseColor else dim,
+                    fontSize = if (selected) 20.sp else 16.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                )
+            }
+        }
+
+        Canvas(modifier = Modifier.matchParentSize().zIndex(1f)) {
+            val yTop = size.height / 2f - WheelItemHeight.toPx() / 2f
+            val yBot = size.height / 2f + WheelItemHeight.toPx() / 2f
+            val line = if (isDark) Color(0x66FFFFFF) else Color(0x33000000)
+            drawLine(line, Offset(0f, yTop), Offset(size.width, yTop), strokeWidth = 1f)
+            drawLine(line, Offset(0f, yBot), Offset(size.width, yBot), strokeWidth = 1f)
+        }
+
+        Box(Modifier.matchParentSize().background(if (isDark) WheelMaskBrushDark else WheelMaskBrushLight))
+    }
+}
+
+/** 중앙 인덱스 계산 (보이는 5줄 중 가운데) */
+private fun centerIndexFrom(state: androidx.compose.foundation.lazy.LazyListState): Int {
+    val first = state.firstVisibleItemIndex
+    val offset = if (state.firstVisibleItemScrollOffset > 0) 1 else 0
+    return first + WheelVisibleCount / 2 + offset
 }
